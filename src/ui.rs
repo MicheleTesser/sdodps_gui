@@ -187,7 +187,7 @@ fn render_variables(frame: &mut Frame, area: Rect, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Variabili [g, G, e, /, s, r]"),
+                    .title("Variabili [g, G, e, x, /, s, r]"),
             )
             .column_spacing(1),
         area,

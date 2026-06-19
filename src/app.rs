@@ -9,6 +9,7 @@ use crate::can::{CanFrame, CanTransport};
 use crate::config::RuntimeConfig;
 use crate::dbc::{Database, SdoBoardDef, Value, ValueKind, ValueStorage};
 use crate::dbcc::DbccRuntime;
+use crate::exports::{export_from_cached_values, save_export_file};
 
 const OPCODE_GET_REQ: u64 = 1;
 const OPCODE_SET_REQ: u64 = 2;
@@ -170,6 +171,10 @@ impl App {
             KeyCode::Char('g') => self.get_selected()?,
             KeyCode::Char('G') => self.get_all_for_current_scope()?,
             KeyCode::Enter | KeyCode::Char('e') => self.begin_set_selected()?,
+            KeyCode::Char('x') => {
+                let path = self.export_current_values()?;
+                self.push_status("export", format!("salvato {}", path.display()));
+            }
             KeyCode::Esc => {
                 self.board_filter = None;
                 self.search_filter.clear();
@@ -609,6 +614,11 @@ impl App {
     fn store_sdo_value(&mut self, board_name: &str, var_id: u16, value: Value) {
         self.sdo_values
             .insert((board_name.to_string(), var_id), (value, Instant::now()));
+    }
+
+    fn export_current_values(&self) -> Result<std::path::PathBuf> {
+        let export = export_from_cached_values(&self.database, &self.sdo_values);
+        save_export_file("exports", &export, None, None)
     }
 }
 

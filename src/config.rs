@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_CONFIG_PATH: &str = "sdodps_gui.toml";
@@ -10,7 +11,7 @@ const DEFAULT_DBC_PATH: &str = "dbc/can2.dbc";
 const DEFAULT_SOCKETCAN: &str = "can0";
 const DEFAULT_DBCC_PATH: &str = "dbc/dbcc/dbcc";
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(author, version, about = "Ratatui frontend for SDO/DPS over SocketCAN")]
 pub struct CliArgs {
     #[arg(long)]
@@ -21,6 +22,59 @@ pub struct CliArgs {
     pub can: Option<String>,
     #[arg(long)]
     pub dbcc: Option<PathBuf>,
+    #[arg(long, default_value_t = 1000)]
+    pub timeout_ms: u64,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    Export(ExportCommand),
+    Restore(RestoreCommand),
+    Get(GetCommand),
+    Set(SetCommand),
+    List(ListCommand),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ExportCommand {
+    #[arg(long)]
+    pub board: Option<String>,
+    #[arg(long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct RestoreCommand {
+    #[arg(value_name = "FILE")]
+    pub input: PathBuf,
+    #[arg(long)]
+    pub board: Option<String>,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct GetCommand {
+    #[arg(long)]
+    pub board: String,
+    #[arg(long)]
+    pub variable: String,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct SetCommand {
+    #[arg(long)]
+    pub board: String,
+    #[arg(long)]
+    pub variable: String,
+    #[arg(long)]
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ListCommand {
+    #[arg(long)]
+    pub board: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,10 +100,11 @@ pub struct RuntimeConfig {
     pub dbc_path: PathBuf,
     pub socketcan: String,
     pub dbcc_path: Option<PathBuf>,
+    pub timeout: Duration,
 }
 
 impl RuntimeConfig {
-    pub fn load() -> Result<Self> {
+    pub fn load_with_args() -> Result<(Self, CliArgs)> {
         let args = CliArgs::parse();
         let config_path = args
             .config
@@ -64,21 +119,27 @@ impl RuntimeConfig {
             default
         };
 
-        Ok(Self {
+        let runtime = Self {
             dbc_path: args
                 .dbc
+                .clone()
                 .or(file_config.dbc_path)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_DBC_PATH)),
             socketcan: args
                 .can
+                .clone()
                 .or(file_config.socketcan)
                 .unwrap_or_else(|| DEFAULT_SOCKETCAN.to_string()),
             dbcc_path: args
                 .dbcc
+                .clone()
                 .or(file_config.dbcc_path)
                 .or_else(default_dbcc_path),
             config_path,
-        })
+            timeout: Duration::from_millis(args.timeout_ms),
+        };
+
+        Ok((runtime, args))
     }
 }
 
