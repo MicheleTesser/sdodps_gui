@@ -41,6 +41,7 @@ pub enum SortDirection {
 #[derive(Debug, Clone)]
 pub struct VariableRow {
     pub board: String,
+    pub board_message_id: u32,
     pub var_id: u16,
     pub name: String,
     pub storage: ValueStorage,
@@ -65,14 +66,14 @@ pub struct App {
     pub variable_index: usize,
     pub sort_field: SortField,
     pub sort_direction: SortDirection,
-    pub board_filter: Option<String>,
+    pub board_filter: Option<u32>,
     pub search_filter: String,
     pub logs: Vec<OperationLogEntry>,
     pub last_status: String,
     pub should_quit: bool,
     pub transport: Option<CanTransport>,
     pub transport_error: Option<String>,
-    pub sdo_values: HashMap<(String, u16), (Value, Instant)>,
+    pub sdo_values: HashMap<(u32, u16), (Value, Instant)>,
     pub input_mode: Option<InputMode>,
 }
 
@@ -81,6 +82,7 @@ pub enum InputMode {
     Search,
     SetValue {
         board: String,
+        board_message_id: u32,
         var_id: u16,
         name: String,
         storage: ValueStorage,
@@ -158,10 +160,12 @@ impl App {
                 self.push_status("filter", "visualizzo tutte le schede".to_string());
             }
             KeyCode::Char('f') => {
-                if let Some(board) = self.selected_board_name() {
-                    self.board_filter = Some(board.clone());
+                if let Some(board) = self.selected_board() {
+                    let board_message_id = board.message_id;
+                    let board_label = self.board_label(board);
+                    self.board_filter = Some(board_message_id);
                     self.variable_index = 0;
-                    self.push_status("filter", format!("filtro sulla scheda {board}"));
+                    self.push_status("filter", format!("filtro sulla scheda {board_label}"));
                 }
             }
             KeyCode::Char('/') => self.input_mode = Some(InputMode::Search),
@@ -192,7 +196,7 @@ impl App {
         self.database
             .sdo_boards
             .iter()
-            .map(|board| format!("{} [SDO]", board.name))
+            .map(|board| self.board_label(board))
             .collect()
     }
 
@@ -200,7 +204,7 @@ impl App {
         let mut rows = Vec::new();
 
         for board in &self.database.sdo_boards {
-            if !self.matches_board_filter(&board.name) {
+            if !self.matches_board_filter(board.message_id) {
                 continue;
             }
             for variable in &board.variables {
@@ -209,7 +213,8 @@ impl App {
                 }
                 let value = self.lookup_sdo_value(board, variable.id);
                 rows.push(VariableRow {
-                    board: board.name.clone(),
+                    board: self.board_label(board),
+                    board_message_id: board.message_id,
                     var_id: variable.id,
                     name: variable.name.clone(),
                     storage: variable.storage,
@@ -312,7 +317,7 @@ impl App {
                 };
                 let raw = extract_bits(data, 24, variable.storage.bits);
                 let value = Value::decode_raw(variable.storage, raw);
-                self.store_sdo_value(&board.name, var_id, value.clone());
+                self.store_sdo_value(board.message_id, var_id, value.clone());
                 self.push_status(
                     "sdo",
                     format!("{} {} => {}", board.name, variable.name, value),
@@ -345,7 +350,7 @@ impl App {
             return Ok(());
         };
 
-        self.send_sdo_get(&row.board, row.var_id)
+        self.send_sdo_get(row.board_message_id, row.var_id)
     }
 
     fn get_all_for_current_scope(&mut self) -> Result<()> {
@@ -356,7 +361,7 @@ impl App {
 
         self.push_status("get_all", format!("invio {} richieste", rows.len()));
         for row in rows {
-            self.send_sdo_get(&row.board, row.var_id)?;
+            self.send_sdo_get(row.board_message_id, row.var_id)?;
         }
 
         Ok(())
@@ -368,6 +373,7 @@ impl App {
         };
         self.input_mode = Some(InputMode::SetValue {
             board: row.board,
+            board_message_id: row.board_message_id,
             var_id: row.var_id,
             name: row.name,
             storage: row.storage,
@@ -399,7 +405,8 @@ impl App {
             }
             KeyCode::Enter => {
                 let Some(InputMode::SetValue {
-                    board,
+                    board: _,
+                    board_message_id,
                     var_id,
                     storage,
                     buffer,
@@ -410,7 +417,7 @@ impl App {
                 };
 
                 let value = Value::parse(&buffer, storage)?;
-                self.send_sdo_set(&board, var_id, value)?;
+                self.send_sdo_set(board_message_id, var_id, value)?;
             }
             KeyCode::Char(ch) => {
                 if let Some(InputMode::SetValue { buffer, .. }) = &mut self.input_mode {
@@ -422,14 +429,14 @@ impl App {
         Ok(())
     }
 
-    fn send_sdo_get(&mut self, board_name: &str, var_id: u16) -> Result<()> {
+    fn send_sdo_get(&mut self, board_message_id: u32, var_id: u16) -> Result<()> {
         let Some(board) = self
             .database
             .sdo_boards
             .iter()
-            .find(|item| item.name == board_name)
+            .find(|item| item.message_id == board_message_id)
         else {
-            return Err(anyhow!("scheda SDO '{board_name}' non trovata"));
+            return Err(anyhow!("scheda SDO con id {board_message_id} non trovata"));
         };
         let Some(transport) = &self.transport else {
             return Err(anyhow!("socketcan non disponibile"));
@@ -443,17 +450,17 @@ impl App {
         Ok(())
     }
 
-    fn send_sdo_set(&mut self, board_name: &str, var_id: u16, value: Value) -> Result<()> {
+    fn send_sdo_set(&mut self, board_message_id: u32, var_id: u16, value: Value) -> Result<()> {
         let Some(board) = self
             .database
             .sdo_boards
             .iter()
-            .find(|item| item.name == board_name)
+            .find(|item| item.message_id == board_message_id)
         else {
-            return Err(anyhow!("scheda SDO '{board_name}' non trovata"));
+            return Err(anyhow!("scheda SDO con id {board_message_id} non trovata"));
         };
         let Some(variable) = board.variables.iter().find(|item| item.id == var_id) else {
-            return Err(anyhow!("variabile {var_id} non trovata su {board_name}"));
+            return Err(anyhow!("variabile {var_id} non trovata su {}", self.board_label(board)));
         };
         let Some(transport) = &self.transport else {
             return Err(anyhow!("socketcan non disponibile"));
@@ -524,11 +531,12 @@ impl App {
         }
     }
 
-    fn selected_board_name(&self) -> Option<String> {
-        let labels = self.board_labels();
-        labels
-            .get(self.board_index)
-            .map(|label| label.split_whitespace().next().unwrap_or(label).to_string())
+    pub fn board_window(&self, viewport_rows: usize) -> (usize, usize) {
+        visible_window(self.board_labels().len(), self.board_index, viewport_rows)
+    }
+
+    pub fn variable_window(&self, viewport_rows: usize) -> (usize, usize) {
+        visible_window(self.visible_rows().len(), self.variable_index, viewport_rows)
     }
 
     fn cycle_sort_field(&mut self) {
@@ -549,10 +557,10 @@ impl App {
         self.push_status("sort", format!("direzione {:?}", self.sort_direction));
     }
 
-    fn matches_board_filter(&self, board_name: &str) -> bool {
+    fn matches_board_filter(&self, board_message_id: u32) -> bool {
         self.board_filter
             .as_ref()
-            .map(|filter| filter == board_name)
+            .map(|filter| *filter == board_message_id)
             .unwrap_or(true)
     }
 
@@ -602,14 +610,52 @@ impl App {
 
     fn lookup_sdo_value(&self, board: &SdoBoardDef, var_id: u16) -> Option<(Value, Instant)> {
         self.sdo_values
-            .get(&(board.name.clone(), var_id))
+            .get(&(board.message_id, var_id))
             .map(|entry| (entry.0.clone(), entry.1))
     }
 
-    fn store_sdo_value(&mut self, board_name: &str, var_id: u16, value: Value) {
+    fn store_sdo_value(&mut self, board_message_id: u32, var_id: u16, value: Value) {
         self.sdo_values
-            .insert((board_name.to_string(), var_id), (value, Instant::now()));
+            .insert((board_message_id, var_id), (value, Instant::now()));
     }
+
+    fn selected_board(&self) -> Option<&SdoBoardDef> {
+        self.database.sdo_boards.get(self.board_index)
+    }
+
+    pub fn board_label(&self, board: &SdoBoardDef) -> String {
+        let duplicates = self
+            .database
+            .sdo_boards
+            .iter()
+            .filter(|item| item.name == board.name)
+            .count();
+        let message_name = self
+            .database
+            .messages
+            .get(&board.message_id)
+            .map(|message| message.name.as_str())
+            .unwrap_or("SDO");
+        if duplicates > 1 {
+            format!("{} [{} 0x{:03X}]", board.name, message_name, board.message_id)
+        } else {
+            format!("{} [0x{:03X}]", board.name, board.message_id)
+        }
+    }
+}
+
+fn visible_window(total_rows: usize, selected_index: usize, viewport_rows: usize) -> (usize, usize) {
+    if total_rows == 0 || viewport_rows == 0 {
+        return (0, 0);
+    }
+    let viewport_rows = viewport_rows.min(total_rows);
+    let mut start = selected_index.saturating_sub(viewport_rows.saturating_sub(1));
+    if selected_index < start {
+        start = selected_index;
+    }
+    let max_start = total_rows.saturating_sub(viewport_rows);
+    start = start.min(max_start);
+    (start, viewport_rows)
 }
 
 fn describe_storage(storage: ValueStorage) -> String {

@@ -33,7 +33,16 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let filter = app.board_filter.as_deref().unwrap_or("*");
+    let filter = app
+        .board_filter
+        .and_then(|message_id| {
+            app.database
+                .sdo_boards
+                .iter()
+                .find(|board| board.message_id == message_id)
+                .map(|board| app.board_label(board))
+        })
+        .unwrap_or_else(|| "*".to_string());
     let dbcc = app
         .dbcc
         .generated_dir
@@ -71,7 +80,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(app.database.messages.len().to_string()),
             Span::raw("  "),
             Span::styled("Filtro scheda ", Style::default().fg(Color::Green)),
-            Span::raw(filter.to_string()),
+            Span::raw(filter),
             Span::raw("  "),
             Span::styled("Ricerca ", Style::default().fg(Color::Magenta)),
             Span::raw(if app.search_filter.is_empty() {
@@ -102,10 +111,13 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_boards(frame: &mut Frame, area: Rect, app: &App) {
-    let items = app
-        .board_labels()
+    let labels = app.board_labels();
+    let (offset, len) = app.board_window(area.height.saturating_sub(2) as usize);
+    let items = labels
         .into_iter()
         .enumerate()
+        .skip(offset)
+        .take(len)
         .map(|(index, board)| {
             let style = if index == app.board_index && app.pane == Pane::Boards {
                 Style::default()
@@ -131,9 +143,12 @@ fn render_boards(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_variables(frame: &mut Frame, area: Rect, app: &App) {
     let rows = app.visible_rows();
+    let (offset, len) = app.variable_window(area.height.saturating_sub(3) as usize);
     let table_rows = rows
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(len)
         .map(|(index, row)| {
             let style = if index == app.variable_index && app.pane == Pane::Variables {
                 Style::default()
