@@ -306,6 +306,7 @@ mod tests {
                             bits: 16,
                         },
                         unit: None,
+                        enum_values: Default::default(),
                     },
                     SdoVariableDef {
                         id: 7,
@@ -315,6 +316,7 @@ mod tests {
                             bits: 32,
                         },
                         unit: None,
+                        enum_values: Default::default(),
                     },
                 ],
             }],
@@ -322,11 +324,11 @@ mod tests {
 
         let mut cached = HashMap::new();
         cached.insert(
-            ("PCU".to_string(), 42),
+            (123, 42),
             (Value::Unsigned(99), std::time::Instant::now()),
         );
         cached.insert(
-            ("PCU".to_string(), 7),
+            (123, 7),
             (Value::Float(1.5), std::time::Instant::now()),
         );
 

@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use anyhow::{Result, anyhow};
@@ -47,6 +47,7 @@ pub struct VariableRow {
     pub name: String,
     pub storage: ValueStorage,
     pub unit: Option<String>,
+    pub enum_values: BTreeMap<i64, String>,
     pub value: Option<Value>,
     pub updated_at: Option<Instant>,
 }
@@ -87,6 +88,7 @@ pub enum InputMode {
         var_id: u16,
         name: String,
         storage: ValueStorage,
+        enum_values: BTreeMap<i64, String>,
         buffer: String,
     },
 }
@@ -224,6 +226,7 @@ impl App {
                     name: variable.name.clone(),
                     storage: variable.storage,
                     unit: variable.unit.clone(),
+                    enum_values: variable.enum_values.clone(),
                     value: value.as_ref().map(|entry| entry.0.clone()),
                     updated_at: value.as_ref().map(|entry| entry.1),
                 });
@@ -246,11 +249,13 @@ impl App {
                 name,
                 buffer,
                 storage,
+                enum_values,
                 ..
             }) => Some(format!(
-                "Set {board}.{name} [{}{}]: {buffer}",
+                "Set {board}.{name} [{}{}{}]: {buffer}",
                 describe_value_kind(storage.kind),
-                storage.bits
+                storage.bits,
+                describe_enum_values(enum_values)
             )),
             None => None,
         }
@@ -382,6 +387,7 @@ impl App {
             var_id: row.var_id,
             name: row.name,
             storage: row.storage,
+            enum_values: row.enum_values,
             buffer: String::new(),
         });
         Ok(())
@@ -670,6 +676,19 @@ fn visible_window(total_rows: usize, selected_index: usize, viewport_rows: usize
 
 fn describe_storage(storage: ValueStorage) -> String {
     format!("{}{}", describe_value_kind(storage.kind), storage.bits)
+}
+
+fn describe_enum_values(enum_values: &BTreeMap<i64, String>) -> String {
+    if enum_values.is_empty() {
+        return String::new();
+    }
+
+    let values = enum_values
+        .iter()
+        .map(|(value, label)| format!("{value}={label}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("; enum: {values}")
 }
 
 fn describe_value_kind(kind: ValueKind) -> &'static str {

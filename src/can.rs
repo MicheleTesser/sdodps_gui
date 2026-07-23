@@ -9,6 +9,7 @@ const AF_CAN: i32 = 29;
 const PF_CAN: i32 = AF_CAN;
 const CAN_RAW: i32 = 1;
 const CAN_EFF_FLAG: u32 = 0x8000_0000;
+const RECEIVE_BUFFER_BYTES: libc::c_int = 1_048_576;
 
 #[repr(C)]
 struct SockAddrCan {
@@ -45,6 +46,24 @@ impl CanTransport {
         let fd = unsafe { libc::socket(PF_CAN, libc::SOCK_RAW | libc::SOCK_NONBLOCK, CAN_RAW) };
         if fd < 0 {
             return Err(io::Error::last_os_error()).context("socket(PF_CAN) failed");
+        }
+
+        let receive_buffer = RECEIVE_BUFFER_BYTES;
+        let setsockopt_result = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                (&receive_buffer as *const libc::c_int).cast::<libc::c_void>(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if setsockopt_result < 0 {
+            let error = io::Error::last_os_error();
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(error).context("setsockopt(SO_RCVBUF) failed");
         }
 
         let if_index = unsafe { libc::if_nametoindex(name.as_ptr()) };

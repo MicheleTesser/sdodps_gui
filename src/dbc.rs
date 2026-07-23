@@ -79,6 +79,7 @@ pub struct SdoVariableDef {
     pub name: String,
     pub storage: ValueStorage,
     pub unit: Option<String>,
+    pub enum_values: BTreeMap<i64, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +131,14 @@ impl fmt::Display for Value {
 }
 
 impl Value {
+    pub fn integer_value(&self) -> Option<i64> {
+        match self {
+            Self::Unsigned(value) => i64::try_from(*value).ok(),
+            Self::Signed(value) => Some(*value),
+            Self::Float(_) => None,
+        }
+    }
+
     pub fn parse(input: &str, storage: ValueStorage) -> Result<Self> {
         Ok(match storage.kind {
             ValueKind::Unsigned => Self::Unsigned(
@@ -215,6 +224,9 @@ fn parse_database(path: &Path, raw: &str) -> Result<Database> {
     let value_table_re =
         Regex::new(r#"^VAL_\s+(?P<msg_id>\d+)\s+(?P<signal>[A-Za-z0-9_]+)\s+(?P<body>.+);$"#)?;
     let value_pair_re = Regex::new(r#"(-?\d+)\s+"([^"]+)""#)?;
+    let named_value_table_re =
+        Regex::new(r"^VAL_TABLE_\s+(?P<name>[A-Za-z0-9_]+)\s+(?P<body>.+);$")?;
+    let value_table_ref_re = Regex::new(r"^(?P<name>[A-Za-z0-9_]+)$")?;
     let sig_valtype_re = Regex::new(
         r"^SIG_VALTYPE_\s+(?P<msg_id>\d+)\s+(?P<signal>[A-Za-z0-9_]+)\s+:\s+(?P<kind>\d+);$",
     )?;
@@ -223,11 +235,22 @@ fn parse_database(path: &Path, raw: &str) -> Result<Database> {
     let mut messages = BTreeMap::<u32, MessageDef>::new();
     let mut current_message_id = None;
     let mut raw_value_tables = HashMap::<(u32, String), BTreeMap<i64, String>>::new();
+    let mut named_value_tables = HashMap::<String, BTreeMap<i64, String>>::new();
+    let mut value_table_refs = HashMap::<(u32, String), String>::new();
     let mut sig_valtypes = HashMap::<(u32, String), i32>::new();
 
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(captures) = named_value_table_re.captures(trimmed) {
+            let mut table = BTreeMap::new();
+            for pair in value_pair_re.captures_iter(&captures["body"]) {
+                table.insert(pair[1].parse::<i64>()?, pair[2].to_string());
+            }
+            named_value_tables.insert(captures["name"].to_string(), table);
             continue;
         }
 
@@ -315,7 +338,13 @@ fn parse_database(path: &Path, raw: &str) -> Result<Database> {
             for pair in value_pair_re.captures_iter(&captures["body"]) {
                 table.insert(pair[1].parse::<i64>()?, pair[2].to_string());
             }
-            raw_value_tables.insert((message_id, signal), table);
+            if table.is_empty()
+                && let Some(table_ref) = value_table_ref_re.captures(captures["body"].trim())
+            {
+                value_table_refs.insert((message_id, signal), table_ref["name"].to_string());
+            } else {
+                raw_value_tables.insert((message_id, signal), table);
+            }
             continue;
         }
 
@@ -333,6 +362,15 @@ fn parse_database(path: &Path, raw: &str) -> Result<Database> {
     for ((message_id, signal_name), table) in raw_value_tables {
         if let Some(message) = messages.get_mut(&message_id) {
             message.value_tables.insert(signal_name, table);
+        }
+    }
+
+    for ((message_id, signal_name), table_name) in value_table_refs {
+        if let (Some(message), Some(table)) = (
+            messages.get_mut(&message_id),
+            named_value_tables.get(&table_name),
+        ) {
+            message.value_tables.insert(signal_name, table.clone());
         }
     }
 
@@ -385,6 +423,11 @@ fn parse_database(path: &Path, raw: &str) -> Result<Database> {
                 name,
                 storage: signal.value_storage,
                 unit: signal.unit.clone(),
+                enum_values: message
+                    .value_tables
+                    .get(&signal.name)
+                    .cloned()
+                    .unwrap_or_default(),
             });
         }
         variables.sort_by_key(|variable| variable.id);
@@ -470,20 +513,40 @@ mod tests {
             .find(|board| board.name == "PCU")
             .expect("PCU board missing");
 
-        let kp_batt = pcu
+        let sum_factor_air_left = pcu
             .variables
             .iter()
-            .find(|variable| variable.name == "kp_batt")
-            .expect("kp_batt missing");
-        assert_eq!(kp_batt.storage.kind, ValueKind::Float);
-        assert_eq!(kp_batt.storage.bits, 32);
+            .find(|variable| variable.name == "sum_factor_air_left")
+            .expect("sum_factor_air_left missing");
+        assert_eq!(sum_factor_air_left.storage.kind, ValueKind::Float);
+        assert_eq!(sum_factor_air_left.storage.bits, 32);
 
-        let pump_l_max = pcu
+        let pwm_tsac_r2d_min = pcu
             .variables
             .iter()
-            .find(|variable| variable.name == "pump_l_max")
-            .expect("pump_l_max missing");
-        assert_eq!(pump_l_max.storage.kind, ValueKind::Unsigned);
-        assert_eq!(pump_l_max.storage.bits, 8);
+            .find(|variable| variable.name == "pwm_tsac_r2d_min")
+            .expect("pwm_tsac_r2d_min missing");
+        assert_eq!(pwm_tsac_r2d_min.storage.kind, ValueKind::Unsigned);
+        assert_eq!(pwm_tsac_r2d_min.storage.bits, 8);
+    }
+
+    #[test]
+    fn resolves_named_enum_tables_for_sdo_variables() {
+        let database = Database::load(Path::new("dbc/can2.dbc")).expect("dbc should parse");
+        let mcu = database
+            .sdo_boards
+            .iter()
+            .find(|board| board.message_id == 501)
+            .expect("MCU board missing");
+        let current_m_mission = mcu
+            .variables
+            .iter()
+            .find(|variable| variable.name == "current_m_mission")
+            .expect("current_m_mission missing");
+
+        assert_eq!(
+            current_m_mission.enum_values.get(&2),
+            Some(&"autocross".to_string())
+        );
     }
 }

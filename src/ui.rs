@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
 
-use crate::app::{App, Pane};
+use crate::app::{App, Pane, VariableRow};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = Layout::default()
@@ -164,10 +164,10 @@ fn render_variables(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(row.name.clone()),
                 Cell::from(format!("{:?}{}", row.storage.kind, row.storage.bits)),
                 Cell::from(
-                    row.value
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "-".to_string()),
+                    row.value.as_ref().map_or_else(
+                        || "-".to_string(),
+                        |_| display_value(row),
+                    ),
                 ),
                 Cell::from(
                     row.updated_at
@@ -185,7 +185,7 @@ fn render_variables(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(6),
         Constraint::Min(20),
         Constraint::Length(10),
-        Constraint::Length(16),
+        Constraint::Length(28),
         Constraint::Length(8),
         Constraint::Length(8),
     ];
@@ -207,6 +207,20 @@ fn render_variables(frame: &mut Frame, area: Rect, app: &App) {
             .column_spacing(1),
         area,
     );
+}
+
+fn display_value(row: &VariableRow) -> String {
+    let Some(value) = &row.value else {
+        return "-".to_string();
+    };
+    let Some(label) = value
+        .integer_value()
+        .and_then(|value| row.enum_values.get(&value))
+    else {
+        return value.to_string();
+    };
+
+    format!("{value} ({label})")
 }
 
 fn render_log(frame: &mut Frame, area: Rect, app: &App) {

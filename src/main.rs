@@ -27,6 +27,8 @@ use crate::dbcc::DbccRuntime;
 use crate::exports::{apply_export_file, export_live, save_export_file, storage_tag};
 use crate::sdo::{get_with_response, parse_cli_value, variable_by_name};
 
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 fn main() -> Result<()> {
     let (runtime, args) = RuntimeConfig::load_with_args()?;
     let database = Database::load(&runtime.dbc_path)?;
@@ -70,7 +72,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
             break;
         }
 
-        if event::poll(Duration::from_millis(100))?
+        if event::poll(INPUT_POLL_INTERVAL)?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
