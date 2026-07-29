@@ -10,7 +10,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Min(10),
             Constraint::Length(10),
         ])
@@ -43,24 +43,6 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
                 .map(|board| app.board_label(board))
         })
         .unwrap_or_else(|| "*".to_string());
-    let dbcc = app
-        .dbcc
-        .generated_dir
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "disabled".to_string());
-    let dbcc_exec = app
-        .dbcc
-        .executable
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "-".to_string());
-    let bindings = app
-        .dbcc
-        .bindings_path
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "-".to_string());
     let text = vec![
         Line::from(vec![
             Span::styled("DBC ", Style::default().fg(Color::Cyan)),
@@ -89,18 +71,25 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
                 app.search_filter.clone()
             }),
             Span::raw("  "),
-            Span::styled("dbcc ", Style::default().fg(Color::LightCyan)),
-            Span::raw(dbcc),
+            Span::styled("2rust ", Style::default().fg(Color::LightCyan)),
+            Span::raw(format!(
+                "v{} / 0x{:08x}",
+                crate::generated::DBCC_GENERATOR_VERSION,
+                crate::generated::DBCC_HASH
+            )),
             Span::raw("  "),
             Span::styled("Stato ", Style::default().fg(Color::Blue)),
             Span::raw(app.last_status.clone()),
         ]),
         Line::from(vec![
-            Span::styled("dbcc-bin ", Style::default().fg(Color::LightBlue)),
-            Span::raw(dbcc_exec),
+            Span::styled("Modulo ", Style::default().fg(Color::LightBlue)),
+            Span::raw(crate::generated::DBCC_MODULE_NAME),
             Span::raw("  "),
-            Span::styled("bindings ", Style::default().fg(Color::LightBlue)),
-            Span::raw(bindings),
+            Span::styled(
+                "Sorgente incorporata ",
+                Style::default().fg(Color::LightBlue),
+            ),
+            Span::raw(crate::generated::DBC_SOURCE_PATH),
         ]),
     ];
 
@@ -164,10 +153,9 @@ fn render_variables(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(row.name.clone()),
                 Cell::from(format!("{:?}{}", row.storage.kind, row.storage.bits)),
                 Cell::from(
-                    row.value.as_ref().map_or_else(
-                        || "-".to_string(),
-                        |_| display_value(row),
-                    ),
+                    row.value
+                        .as_ref()
+                        .map_or_else(|| "-".to_string(), |_| display_value(row)),
                 ),
                 Cell::from(
                     row.updated_at

@@ -22,14 +22,29 @@ Quindi se sposti variabili o ne inserisci altre in mezzo, il restore non riasseg
 
 - Rust toolchain
 - Linux con SocketCAN
-- `clang` / `libclang` per `bindgen`
-- `dbcc` compilato in `dbc/dbcc/dbcc`
+- toolchain C e `make` per compilare `dbcc`
 
 ## Setup
 
 ```bash
 git -C dbc submodule update --init --recursive
-make -C dbc/dbcc
+cargo build
+```
+
+`build.rs` compila automaticamente `dbc/dbcc/dbcc`, esegue `dbcc -R` e
+include nel binario il modulo Rust generato da `dbc/can2.dbc`. Non sono più
+necessari `bindgen`, `clang` o binding C runtime.
+
+Per compilare un DBC diverso:
+
+```bash
+SDODPS_DBC_PATH=path/to/vehicle.dbc cargo build
+```
+
+È possibile indicare un eseguibile `dbcc` già pronto:
+
+```bash
+SDODPS_DBCC_PATH=/path/to/dbcc cargo build
 ```
 
 ## Config
@@ -41,15 +56,18 @@ Esempio:
 ```toml
 dbc_path = "dbc/can2.dbc"
 socketcan = "can0"
-dbcc_path = "dbc/dbcc/dbcc"
 ```
+
+`dbc_path` deve contenere lo stesso DBC incorporato durante la build. La GUI
+verifica i byte all'avvio e rifiuta un file differente, evitando di codificare
+frame con un layout diverso dal modulo `2rust`. Per cambiare DBC occorre quindi
+ricompilare con `SDODPS_DBC_PATH`.
 
 Override globali supportati da tutti i comandi:
 
 - `--config <file>`
 - `--dbc <file>`
 - `--can <iface>`
-- `--dbcc <file>`
 - `--timeout-ms <ms>`
 
 ## CLI
@@ -194,7 +212,8 @@ Tasti principali:
 
 ## Chiamate protocollo SDO
 
-La CLI usa queste operazioni raw sul bus CAN:
+Il layout dei frame, gli opcode, i tipi wire, scaling e offset provengono dal
+modulo generato da `2rust`. La CLI usa queste operazioni sul bus CAN:
 
 - `GET request`
   - payload 7 byte
@@ -218,4 +237,5 @@ Per `set`, l'ack e' una risposta sullo stesso CAN ID della scheda e sulla stessa
 ```bash
 cargo check
 cargo test
+make -C dbc/dbcc test_rust
 ```

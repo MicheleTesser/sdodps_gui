@@ -2,8 +2,8 @@ mod app;
 mod can;
 mod config;
 mod dbc;
-mod dbcc;
 mod exports;
+mod generated;
 mod sdo;
 mod ui;
 
@@ -23,7 +23,6 @@ use crate::app::App;
 use crate::can::CanTransport;
 use crate::config::{Command, RuntimeConfig};
 use crate::dbc::Database;
-use crate::dbcc::DbccRuntime;
 use crate::exports::{apply_export_file, export_live, save_export_file, storage_tag};
 use crate::sdo::{get_with_response, parse_cli_value, variable_by_name};
 
@@ -38,7 +37,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let dbcc = DbccRuntime::prepare(&runtime)?;
     let transport = CanTransport::open(&runtime.socketcan).map_err(|error| {
         anyhow::anyhow!(
             "cannot open socketcan interface '{}': {error}",
@@ -46,7 +44,7 @@ fn main() -> Result<()> {
         )
     });
 
-    let mut app = App::new(runtime, database, transport, dbcc);
+    let mut app = App::new(runtime, database, transport);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -86,11 +84,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
     Ok(())
 }
 
-fn run_command(
-    command: &Command,
-    runtime: &RuntimeConfig,
-    database: &Database,
-) -> Result<()> {
+fn run_command(command: &Command, runtime: &RuntimeConfig, database: &Database) -> Result<()> {
     match command {
         Command::List(command) => {
             if let Some(board_name) = command.board.as_deref() {
@@ -151,12 +145,8 @@ fn run_command(
         Command::Get(command) => {
             let transport = open_transport(&runtime.socketcan)?;
             let target = variable_by_name(database, &command.board, &command.variable)?;
-            let value = get_with_response(
-                &transport,
-                target.board,
-                target.variable,
-                runtime.timeout,
-            )?;
+            let value =
+                get_with_response(&transport, target.board, target.variable, runtime.timeout)?;
             println!(
                 "{}.{} [{}] = {}",
                 target.board.name,

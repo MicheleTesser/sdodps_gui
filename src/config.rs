@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_CONFIG_PATH: &str = "sdodps_gui.toml";
 const DEFAULT_DBC_PATH: &str = "dbc/can2.dbc";
 const DEFAULT_SOCKETCAN: &str = "can0";
-const DEFAULT_DBCC_PATH: &str = "dbc/dbcc/dbcc";
 
 #[derive(Debug, Clone, Parser)]
 #[command(author, version, about = "Ratatui frontend for SDO/DPS over SocketCAN")]
@@ -20,8 +19,6 @@ pub struct CliArgs {
     pub dbc: Option<PathBuf>,
     #[arg(long)]
     pub can: Option<String>,
-    #[arg(long)]
-    pub dbcc: Option<PathBuf>,
     #[arg(long, default_value_t = 1000)]
     pub timeout_ms: u64,
     #[command(subcommand)]
@@ -81,7 +78,6 @@ pub struct ListCommand {
 pub struct FileConfig {
     pub dbc_path: Option<PathBuf>,
     pub socketcan: Option<String>,
-    pub dbcc_path: Option<PathBuf>,
 }
 
 impl Default for FileConfig {
@@ -89,7 +85,6 @@ impl Default for FileConfig {
         Self {
             dbc_path: Some(PathBuf::from(DEFAULT_DBC_PATH)),
             socketcan: Some(DEFAULT_SOCKETCAN.to_string()),
-            dbcc_path: default_dbcc_path(),
         }
     }
 }
@@ -99,7 +94,6 @@ pub struct RuntimeConfig {
     pub config_path: PathBuf,
     pub dbc_path: PathBuf,
     pub socketcan: String,
-    pub dbcc_path: Option<PathBuf>,
     pub timeout: Duration,
 }
 
@@ -130,11 +124,6 @@ impl RuntimeConfig {
                 .clone()
                 .or(file_config.socketcan)
                 .unwrap_or_else(|| DEFAULT_SOCKETCAN.to_string()),
-            dbcc_path: args
-                .dbcc
-                .clone()
-                .or(file_config.dbcc_path)
-                .or_else(default_dbcc_path),
             config_path,
             timeout: Duration::from_millis(args.timeout_ms),
         };
@@ -153,9 +142,4 @@ fn write_default_config(path: &Path, file_config: &FileConfig) -> Result<()> {
     let raw = toml::to_string_pretty(file_config).context("failed to serialize default config")?;
     fs::write(path, raw)
         .with_context(|| format!("failed to write default config file {}", path.display()))
-}
-
-fn default_dbcc_path() -> Option<PathBuf> {
-    let path = PathBuf::from(DEFAULT_DBCC_PATH);
-    path.exists().then_some(path)
 }

@@ -5,13 +5,12 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::can::{CanFrame, CanTransport};
 use crate::dbc::{Database, SdoBoardDef, SdoVariableDef, Value, ValueStorage};
+use crate::generated::{SdoOpcode, sdo_frame};
 
-pub const OPCODE_GET_REQ: u64 = 1;
-pub const OPCODE_SET_REQ: u64 = 2;
-pub const OPCODE_RES: u64 = 128;
-pub const OPCODE_ERR_OUT_OF_RANGE: u64 = 253;
-pub const OPCODE_ERR_WRITE_RO: u64 = 254;
-pub const OPCODE_ERR: u64 = 255;
+pub const OPCODE_RES: u64 = SdoOpcode::Response as u64;
+pub const OPCODE_ERR_OUT_OF_RANGE: u64 = SdoOpcode::ErrOutOfRange as u64;
+pub const OPCODE_ERR_WRITE_RO: u64 = SdoOpcode::ErrWriteReadOnly as u64;
+pub const OPCODE_ERR: u64 = SdoOpcode::Error as u64;
 
 const POLL_SLEEP: Duration = Duration::from_millis(5);
 
@@ -44,10 +43,10 @@ pub fn variable_by_name<'a>(
 }
 
 pub fn send_get(transport: &CanTransport, board: &SdoBoardDef, var_id: u16) -> Result<()> {
-    let mut payload = [0u8; 7];
-    insert_bits(&mut payload, 0, 8, OPCODE_GET_REQ);
-    insert_bits(&mut payload, 8, 10, var_id as u64);
-    transport.write_frame(board.message_id, &payload)
+    write_generated_frame(
+        transport,
+        sdo_frame(board.message_id, SdoOpcode::GetReq, var_id, 0, 0),
+    )
 }
 
 pub fn send_set(
@@ -56,12 +55,25 @@ pub fn send_set(
     variable: &SdoVariableDef,
     value: Value,
 ) -> Result<()> {
-    let raw = value.encode_raw(variable.storage)?;
-    let mut payload = [0u8; 7];
-    insert_bits(&mut payload, 0, 8, OPCODE_SET_REQ);
-    insert_bits(&mut payload, 8, 10, variable.id as u64);
-    insert_bits(&mut payload, 24, variable.storage.bits, raw);
-    transport.write_frame(board.message_id, &payload)
+    let raw = variable.encode_raw(value)?;
+    write_generated_frame(
+        transport,
+        sdo_frame(
+            board.message_id,
+            SdoOpcode::SetReq,
+            variable.id,
+            raw,
+            u32::from(variable.wire_storage.bits),
+        ),
+    )
+}
+
+fn write_generated_frame(
+    transport: &CanTransport,
+    frame: crate::generated::CanFrame,
+) -> Result<()> {
+    let payload = frame.payload.to_le_bytes();
+    transport.write_frame(frame.id, &payload[..usize::from(frame.dlc)])
 }
 
 pub fn get_with_response(
@@ -128,19 +140,11 @@ fn maybe_decode_response(
 
     match opcode {
         OPCODE_RES => {
-            let raw = extract_bits(&frame.data, 24, variable.storage.bits);
-            Ok(Some(Value::decode_raw(variable.storage, raw)))
+            let raw = extract_bits(&frame.data, 24, variable.wire_storage.bits);
+            Ok(Some(variable.decode_raw(raw)))
         }
-        OPCODE_ERR_OUT_OF_RANGE => Err(anyhow!(
-            "{}.{} fuori range",
-            board.name,
-            variable.name
-        )),
-        OPCODE_ERR_WRITE_RO => Err(anyhow!(
-            "{}.{} readonly",
-            board.name,
-            variable.name
-        )),
+        OPCODE_ERR_OUT_OF_RANGE => Err(anyhow!("{}.{} fuori range", board.name, variable.name)),
+        OPCODE_ERR_WRITE_RO => Err(anyhow!("{}.{} readonly", board.name, variable.name)),
         OPCODE_ERR => Err(anyhow!("{}.{} errore generico", board.name, variable.name)),
         other => Err(anyhow!(
             "{}.{} opcode inatteso {}",
@@ -155,20 +159,6 @@ pub fn parse_cli_value(value: &str, storage: ValueStorage) -> Result<Value> {
     Value::parse(value, storage)
 }
 
-pub fn insert_bits(buffer: &mut [u8], start_bit: u16, bit_len: u16, value: u64) {
-    for offset in 0..bit_len {
-        let bit = ((value >> offset) & 1) as u8;
-        let absolute = start_bit + offset;
-        let byte_index = (absolute / 8) as usize;
-        let bit_index = (absolute % 8) as u8;
-        if bit == 1 {
-            buffer[byte_index] |= 1u8 << bit_index;
-        } else {
-            buffer[byte_index] &= !(1u8 << bit_index);
-        }
-    }
-}
-
 pub fn extract_bits(buffer: &[u8], start_bit: u16, bit_len: u16) -> u64 {
     let mut value = 0u64;
     for offset in 0..bit_len {
@@ -179,4 +169,31 @@ pub fn extract_bits(buffer: &[u8], start_bit: u16, bit_len: u16) -> u64 {
         value |= u64::from(bit) << offset;
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_sdo_frame_uses_the_dbc_layout() {
+        let frame = sdo_frame(0x1f4, SdoOpcode::SetReq, 0x155, 0x5a, 8);
+        let payload = frame.payload.to_le_bytes();
+
+        assert_eq!(frame.id, 0x1f4);
+        assert_eq!(frame.dlc, 7);
+        assert_eq!(extract_bits(&payload, 0, 8), SdoOpcode::SetReq as u64);
+        assert_eq!(extract_bits(&payload, 8, 10), 0x155);
+        assert_eq!(extract_bits(&payload, 24, 8), 0x5a);
+    }
+
+    #[test]
+    fn extracts_only_the_declared_boolean_bit() {
+        let mut payload = [0u8; 7];
+        payload[3] = 200;
+        assert_eq!(extract_bits(&payload, 24, 1), 0);
+
+        payload[3] = 201;
+        assert_eq!(extract_bits(&payload, 24, 1), 1);
+    }
 }

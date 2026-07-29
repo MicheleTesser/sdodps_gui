@@ -70,7 +70,10 @@ pub fn export_live(
             .then(left.type_name.cmp(&right.type_name))
     });
 
-    Ok(ExportFile { version: 1, entries })
+    Ok(ExportFile {
+        version: 1,
+        entries,
+    })
 }
 
 pub fn save_export_file(
@@ -169,9 +172,10 @@ pub fn apply_export_file(
                 types.join(",")
             ));
         } else {
-            report
-                .missing
-                .push(format!("{}.{} [{}]", entry.board, entry.variable, entry.type_name));
+            report.missing.push(format!(
+                "{}.{} [{}]",
+                entry.board, entry.variable, entry.type_name
+            ));
         }
     }
 
@@ -237,10 +241,16 @@ pub fn export_from_cached_values(
             .then(left.type_name.cmp(&right.type_name))
     });
 
-    ExportFile { version: 1, entries }
+    ExportFile {
+        version: 1,
+        entries,
+    }
 }
 
-fn filtered_boards<'a>(database: &'a Database, board_filter: Option<&str>) -> Result<Vec<&'a SdoBoardDef>> {
+fn filtered_boards<'a>(
+    database: &'a Database,
+    board_filter: Option<&str>,
+) -> Result<Vec<&'a SdoBoardDef>> {
     let mut boards = Vec::new();
 
     for board in &database.sdo_boards {
@@ -305,6 +315,12 @@ mod tests {
                             kind: ValueKind::Unsigned,
                             bits: 16,
                         },
+                        wire_storage: ValueStorage {
+                            kind: ValueKind::Unsigned,
+                            bits: 16,
+                        },
+                        factor: 1.0,
+                        offset: 0.0,
                         unit: None,
                         enum_values: Default::default(),
                     },
@@ -315,6 +331,12 @@ mod tests {
                             kind: ValueKind::Float,
                             bits: 32,
                         },
+                        wire_storage: ValueStorage {
+                            kind: ValueKind::Float,
+                            bits: 32,
+                        },
+                        factor: 1.0,
+                        offset: 0.0,
                         unit: None,
                         enum_values: Default::default(),
                     },
@@ -323,14 +345,8 @@ mod tests {
         };
 
         let mut cached = HashMap::new();
-        cached.insert(
-            (123, 42),
-            (Value::Unsigned(99), std::time::Instant::now()),
-        );
-        cached.insert(
-            (123, 7),
-            (Value::Float(1.5), std::time::Instant::now()),
-        );
+        cached.insert((123, 42), (Value::Unsigned(99), std::time::Instant::now()));
+        cached.insert((123, 7), (Value::Float(1.5), std::time::Instant::now()));
 
         let export = export_from_cached_values(&database, &cached);
         let keys = export

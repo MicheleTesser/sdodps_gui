@@ -8,15 +8,9 @@ use crossterm::event::KeyCode;
 use crate::can::{CanFrame, CanTransport};
 use crate::config::RuntimeConfig;
 use crate::dbc::{Database, SdoBoardDef, Value, ValueKind, ValueStorage};
-use crate::dbcc::DbccRuntime;
 use crate::exports::{export_from_cached_values, save_export_file};
-
-const OPCODE_GET_REQ: u64 = 1;
-const OPCODE_SET_REQ: u64 = 2;
-const OPCODE_RES: u64 = 128;
-const OPCODE_ERR_OUT_OF_RANGE: u64 = 253;
-const OPCODE_ERR_WRITE_RO: u64 = 254;
-const OPCODE_ERR: u64 = 255;
+use crate::generated::SdoOpcode;
+use crate::sdo::{extract_bits, send_get, send_set};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -62,7 +56,6 @@ pub struct OperationLogEntry {
 pub struct App {
     pub runtime: RuntimeConfig,
     pub database: Database,
-    pub dbcc: DbccRuntime,
     pub pane: Pane,
     pub board_index: usize,
     pub variable_index: usize,
@@ -98,7 +91,6 @@ impl App {
         runtime: RuntimeConfig,
         database: Database,
         transport: Result<CanTransport>,
-        dbcc: DbccRuntime,
     ) -> Self {
         let (transport, transport_error) = match transport {
             Ok(transport) => (Some(transport), None),
@@ -108,7 +100,6 @@ impl App {
         let mut app = Self {
             runtime,
             database,
-            dbcc,
             pane: Pane::Boards,
             board_index: 0,
             variable_index: 0,
@@ -128,10 +119,11 @@ impl App {
         app.push_status(
             "startup",
             format!(
-                "dbc={} can={} dbcc={}",
+                "dbc={} can={} 2rust=v{} hash=0x{:08x}",
                 app.runtime.dbc_path.display(),
                 app.runtime.socketcan,
-                app.dbcc.status
+                crate::generated::DBCC_GENERATOR_VERSION,
+                crate::generated::DBCC_HASH,
             ),
         );
         if let Some(error) = &app.transport_error {
@@ -313,7 +305,7 @@ impl App {
         let var_id = extract_bits(data, 8, 10) as u16;
 
         match opcode {
-            OPCODE_RES => {
+            value if value == SdoOpcode::Response as u64 => {
                 let Some(variable) = board
                     .variables
                     .iter()
@@ -325,24 +317,24 @@ impl App {
                     );
                     return Ok(());
                 };
-                let raw = extract_bits(data, 24, variable.storage.bits);
-                let value = Value::decode_raw(variable.storage, raw);
+                let raw = extract_bits(data, 24, variable.wire_storage.bits);
+                let value = variable.decode_raw(raw);
                 self.store_sdo_value(board.message_id, var_id, value.clone());
                 self.push_status(
                     "sdo",
                     format!("{} {} => {}", board.name, variable.name, value),
                 );
             }
-            OPCODE_ERR_OUT_OF_RANGE => {
+            value if value == SdoOpcode::ErrOutOfRange as u64 => {
                 self.push_status(
                     "sdo",
                     format!("{} var_id {} fuori range", board.name, var_id),
                 );
             }
-            OPCODE_ERR_WRITE_RO => {
+            value if value == SdoOpcode::ErrWriteReadOnly as u64 => {
                 self.push_status("sdo", format!("{} var_id {} readonly", board.name, var_id));
             }
-            OPCODE_ERR => {
+            value if value == SdoOpcode::Error as u64 => {
                 self.push_status(
                     "sdo",
                     format!("{} errore generico su var_id {}", board.name, var_id),
@@ -453,10 +445,7 @@ impl App {
             return Err(anyhow!("socketcan non disponibile"));
         };
 
-        let mut payload = [0u8; 7];
-        insert_bits(&mut payload, 0, 8, OPCODE_GET_REQ);
-        insert_bits(&mut payload, 8, 10, var_id as u64);
-        transport.write_frame(board.message_id, &payload)?;
+        send_get(transport, board, var_id)?;
         self.push_status("get", format!("{} var_id {}", board.name, var_id));
         Ok(())
     }
@@ -471,18 +460,16 @@ impl App {
             return Err(anyhow!("scheda SDO con id {board_message_id} non trovata"));
         };
         let Some(variable) = board.variables.iter().find(|item| item.id == var_id) else {
-            return Err(anyhow!("variabile {var_id} non trovata su {}", self.board_label(board)));
+            return Err(anyhow!(
+                "variabile {var_id} non trovata su {}",
+                self.board_label(board)
+            ));
         };
         let Some(transport) = &self.transport else {
             return Err(anyhow!("socketcan non disponibile"));
         };
 
-        let raw = value.clone().encode_raw(variable.storage)?;
-        let mut payload = [0u8; 7];
-        insert_bits(&mut payload, 0, 8, OPCODE_SET_REQ);
-        insert_bits(&mut payload, 8, 10, var_id as u64);
-        insert_bits(&mut payload, 24, variable.storage.bits, raw);
-        transport.write_frame(board.message_id, &payload)?;
+        send_set(transport, board, variable, value.clone())?;
         self.push_status(
             "set",
             format!("{} {} <= {}", board.name, variable.name, value),
@@ -547,7 +534,11 @@ impl App {
     }
 
     pub fn variable_window(&self, viewport_rows: usize) -> (usize, usize) {
-        visible_window(self.visible_rows().len(), self.variable_index, viewport_rows)
+        visible_window(
+            self.visible_rows().len(),
+            self.variable_index,
+            viewport_rows,
+        )
     }
 
     fn cycle_sort_field(&mut self) {
@@ -648,7 +639,10 @@ impl App {
             .map(|message| message.name.as_str())
             .unwrap_or("SDO");
         if duplicates > 1 {
-            format!("{} [{} 0x{:03X}]", board.name, message_name, board.message_id)
+            format!(
+                "{} [{} 0x{:03X}]",
+                board.name, message_name, board.message_id
+            )
         } else {
             format!("{} [0x{:03X}]", board.name, board.message_id)
         }
@@ -660,7 +654,11 @@ impl App {
     }
 }
 
-fn visible_window(total_rows: usize, selected_index: usize, viewport_rows: usize) -> (usize, usize) {
+fn visible_window(
+    total_rows: usize,
+    selected_index: usize,
+    viewport_rows: usize,
+) -> (usize, usize) {
     if total_rows == 0 || viewport_rows == 0 {
         return (0, 0);
     }
@@ -697,30 +695,4 @@ fn describe_value_kind(kind: ValueKind) -> &'static str {
         ValueKind::Signed => "i",
         ValueKind::Float => "f",
     }
-}
-
-fn insert_bits(buffer: &mut [u8], start_bit: u16, bit_len: u16, value: u64) {
-    for offset in 0..bit_len {
-        let bit = ((value >> offset) & 1) as u8;
-        let absolute = start_bit + offset;
-        let byte_index = (absolute / 8) as usize;
-        let bit_index = (absolute % 8) as u8;
-        if bit == 1 {
-            buffer[byte_index] |= 1u8 << bit_index;
-        } else {
-            buffer[byte_index] &= !(1u8 << bit_index);
-        }
-    }
-}
-
-fn extract_bits(buffer: &[u8], start_bit: u16, bit_len: u16) -> u64 {
-    let mut value = 0u64;
-    for offset in 0..bit_len {
-        let absolute = start_bit + offset;
-        let byte_index = (absolute / 8) as usize;
-        let bit_index = (absolute % 8) as u8;
-        let bit = (buffer[byte_index] >> bit_index) & 1;
-        value |= u64::from(bit) << offset;
-    }
-    value
 }
